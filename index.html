@@ -8,6 +8,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'DM Sans','SF Pro Display',system-ui,sans-serif; background: #0c0e14; color: #dde0e8; }
@@ -320,130 +321,109 @@
       const eur = (v) => v != null ? v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
       const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir("asc"); } };
 
-      /* Excel Export mit Farben */
-      const exportExcel = () => {
-        const X = getXLSX();
-        const headers = ["Teilenr", "Bezeichnung", "Menge", "Familie", "Segment", "Rabattcode", "UVP Gesamt", "Rabatt 2025%", "Rabatt 2026%", "EK 2025", "EK 2026", "Differenz", "Status"];
-        const data = [headers];
-        
-        sorted.forEach(a => {
-          data.push([
-            a.teilenr,
-            a.bezeich,
-            a.menge,
-            a.familie,
-            a.segment,
-            a.rabattcode,
-            a.uvpTotal,
-            a.r2025,
-            a.r2026,
-            a.ek2025,
-            a.ek2026,
-            a.diffGes,
-            a.status
-          ]);
-        });
-        
-        const ws = X.utils.aoa_to_sheet(data);
+      /* Excel Export mit Farben (ExcelJS) */
+      const exportExcel = async () => {
+        const wb = new ExcelJS.Workbook();
+        const ws = wb.addWorksheet('EK-Vergleich');
         
         // Spaltenbreiten
-        ws['!cols'] = [
-          { wch: 14 }, // Teilenr
-          { wch: 30 }, // Bezeichnung
-          { wch: 8 },  // Menge
-          { wch: 8 },  // Familie
-          { wch: 8 },  // Segment
-          { wch: 10 }, // Rabattcode
-          { wch: 12 }, // UVP
-          { wch: 12 }, // Rab 2025
-          { wch: 12 }, // Rab 2026
-          { wch: 12 }, // EK 2025
-          { wch: 12 }, // EK 2026
-          { wch: 12 }, // Differenz
-          { wch: 10 }, // Status
+        ws.columns = [
+          { header: 'Teilenr', key: 'teilenr', width: 14 },
+          { header: 'Bezeichnung', key: 'bezeich', width: 32 },
+          { header: 'Menge', key: 'menge', width: 8 },
+          { header: 'Familie', key: 'familie', width: 8 },
+          { header: 'Segment', key: 'segment', width: 8 },
+          { header: 'Rabattcode', key: 'rabattcode', width: 11 },
+          { header: 'UVP Gesamt', key: 'uvp', width: 13 },
+          { header: 'Rabatt 25%', key: 'r2025', width: 11 },
+          { header: 'Rabatt 26%', key: 'r2026', width: 11 },
+          { header: 'EK 2025', key: 'ek2025', width: 13 },
+          { header: 'EK 2026', key: 'ek2026', width: 13 },
+          { header: 'Differenz', key: 'diff', width: 13 },
+          { header: 'Status', key: 'status', width: 11 },
         ];
         
-        // Farben für Zellen
-        for (let i = 1; i <= sorted.length; i++) {
-          const row = sorted[i - 1];
-          const rowNum = i + 1;
-          
-          // Status-Spalte (M)
-          const statusCell = ws[`M${rowNum}`];
-          if (statusCell) {
-            if (row.status === "billiger") {
-              statusCell.s = { fill: { fgColor: { rgb: "C6EFCE" } }, font: { color: { rgb: "006100" } } };
-            } else if (row.status === "teurer") {
-              statusCell.s = { fill: { fgColor: { rgb: "FFC7CE" } }, font: { color: { rgb: "9C0006" } } };
-            } else if (row.status === "gleich") {
-              statusCell.s = { fill: { fgColor: { rgb: "FFEB9C" } }, font: { color: { rgb: "9C5700" } } };
-            }
-          }
-          
-          // Differenz-Spalte (L)
-          const diffCell = ws[`L${rowNum}`];
-          if (diffCell && row.diffGes != null) {
-            if (row.diffGes < 0) {
-              diffCell.s = { fill: { fgColor: { rgb: "C6EFCE" } }, font: { color: { rgb: "006100" }, bold: true } };
-            } else if (row.diffGes > 0) {
-              diffCell.s = { fill: { fgColor: { rgb: "FFC7CE" } }, font: { color: { rgb: "9C0006" }, bold: true } };
-            }
-          }
-          
-          // EK 2026 (K)
-          const ek26Cell = ws[`K${rowNum}`];
-          if (ek26Cell && row.status === "billiger") {
-            ek26Cell.s = { font: { color: { rgb: "006100" }, bold: true } };
-          } else if (ek26Cell && row.status === "teurer") {
-            ek26Cell.s = { font: { color: { rgb: "9C0006" }, bold: true } };
-          }
-        }
+        // Header-Styling
+        ws.getRow(1).eachCell((cell) => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+          cell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+          cell.alignment = { horizontal: 'center' };
+        });
         
-        // Header styling
-        headers.forEach((h, idx) => {
-          const cell = ws[X.utils.encode_cell({ r: 0, c: idx })];
-          if (cell) {
-            cell.s = { fill: { fgColor: { rgb: "4472C4" } }, font: { color: { rgb: "FFFFFF" }, bold: true } };
+        // Daten hinzufügen
+        sorted.forEach((a, idx) => {
+          const row = ws.addRow({
+            teilenr: a.teilenr,
+            bezeich: a.bezeich,
+            menge: a.menge,
+            familie: a.familie,
+            segment: a.segment,
+            rabattcode: a.rabattcode,
+            uvp: a.uvpTotal,
+            r2025: a.r2025 != null ? a.r2025 / 100 : null,
+            r2026: a.r2026 != null ? a.r2026 / 100 : null,
+            ek2025: a.ek2025,
+            ek2026: a.ek2026,
+            diff: a.diffGes,
+            status: a.status,
+          });
+          
+          // Währungsformat
+          row.getCell('uvp').numFmt = '#,##0.00 €';
+          row.getCell('ek2025').numFmt = '#,##0.00 €';
+          row.getCell('ek2026').numFmt = '#,##0.00 €';
+          row.getCell('diff').numFmt = '#,##0.00 €';
+          row.getCell('r2025').numFmt = '0.00%';
+          row.getCell('r2026').numFmt = '0.00%';
+          
+          // Farbliche Markierung basierend auf Status
+          if (a.status === 'billiger') {
+            row.getCell('status').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+            row.getCell('status').font = { color: { argb: 'FF006100' }, bold: true };
+            row.getCell('diff').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+            row.getCell('diff').font = { color: { argb: 'FF006100' }, bold: true };
+            row.getCell('ek2026').font = { color: { argb: 'FF006100' }, bold: true };
+          } else if (a.status === 'teurer') {
+            row.getCell('status').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+            row.getCell('status').font = { color: { argb: 'FF9C0006' }, bold: true };
+            row.getCell('diff').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+            row.getCell('diff').font = { color: { argb: 'FF9C0006' }, bold: true };
+            row.getCell('ek2026').font = { color: { argb: 'FF9C0006' }, bold: true };
+          } else if (a.status === 'gleich') {
+            row.getCell('status').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEB9C' } };
+            row.getCell('status').font = { color: { argb: 'FF9C5700' } };
+          } else {
+            row.getCell('status').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+            row.getCell('status').font = { color: { argb: 'FF666666' } };
           }
         });
         
-        // Zahlenformat für Währung
-        for (let i = 1; i <= sorted.length; i++) {
-          const rowNum = i + 1;
-          ['G', 'J', 'K', 'L'].forEach(col => {
-            const cell = ws[`${col}${rowNum}`];
-            if (cell && typeof cell.v === 'number') {
-              cell.z = '#,##0.00 €';
-            }
-          });
-          ['H', 'I'].forEach(col => {
-            const cell = ws[`${col}${rowNum}`];
-            if (cell && typeof cell.v === 'number') {
-              cell.z = '0.00%';
-              cell.v = cell.v / 100;
-            }
-          });
-        }
+        // Leerzeile + Summen
+        ws.addRow({});
+        const sumRow = ws.addRow({
+          ek2025: totals.ek2025,
+          ek2026: totals.ek2026,
+          diff: totals.diff,
+        });
+        sumRow.getCell('r2026').value = 'SUMME:';
+        sumRow.getCell('r2026').font = { bold: true };
+        sumRow.getCell('ek2025').numFmt = '#,##0.00 €';
+        sumRow.getCell('ek2025').font = { bold: true };
+        sumRow.getCell('ek2026').numFmt = '#,##0.00 €';
+        sumRow.getCell('ek2026').font = { bold: true };
+        sumRow.getCell('diff').numFmt = '#,##0.00 €';
+        sumRow.getCell('diff').font = { bold: true, color: { argb: totals.diff < 0 ? 'FF006100' : 'FF9C0006' } };
+        sumRow.getCell('diff').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: totals.diff < 0 ? 'FFC6EFCE' : 'FFFFC7CE' } };
         
-        const wb = X.utils.book_new();
-        X.utils.book_append_sheet(wb, ws, "EK-Vergleich");
-        
-        // Summierung am Ende
-        const sumRow = sorted.length + 3;
-        ws[`I${sumRow}`] = { v: "SUMME:", t: "s", s: { font: { bold: true } } };
-        ws[`J${sumRow}`] = { v: totals.ek2025, t: "n", z: '#,##0.00 €', s: { font: { bold: true } } };
-        ws[`K${sumRow}`] = { v: totals.ek2026, t: "n", z: '#,##0.00 €', s: { font: { bold: true } } };
-        ws[`L${sumRow}`] = { 
-          v: totals.diff, 
-          t: "n", 
-          z: '#,##0.00 €', 
-          s: { 
-            font: { bold: true, color: { rgb: totals.diff < 0 ? "006100" : "9C0006" } },
-            fill: { fgColor: { rgb: totals.diff < 0 ? "C6EFCE" : "FFC7CE" } }
-          } 
-        };
-        
-        X.writeFile(wb, "Renault_EK_Vergleich_2025_2026.xlsx", { bookSST: true, cellStyles: true });
+        // Download
+        const buffer = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'Renault_EK_Vergleich_2025_2026.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
       };
 
       /* ─── DROP ZONE ─── */
