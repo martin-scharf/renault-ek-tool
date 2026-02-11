@@ -288,7 +288,8 @@
 
       // Filter + sort
       const filtered = analyseRows.filter((a) => {
-        const ms = !search || a.teilenr.toLowerCase().includes(search.toLowerCase()) || a.bezeich.toLowerCase().includes(search.toLowerCase());
+        const s = search.toLowerCase();
+        const ms = !search || a.teilenr.toLowerCase().includes(s) || a.bezeich.toLowerCase().includes(s) || a.rabattcode.toLowerCase().includes(s);
         const mf = !filterStatus || a.status === filterStatus;
         return ms && mf;
       });
@@ -319,23 +320,130 @@
       const eur = (v) => v != null ? v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
       const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir("asc"); } };
 
-      /* CSV Export */
-      const exportCSV = () => {
-        const h = "Teilenr;Bezeichnung;Menge;Familie;Segment;Rabattcode;UVP_Gesamt;Rabatt2025%;Rabatt2026%;EK_2025;EK_2026;Differenz;Status";
-        const rows = sorted.map(a =>
-          [a.teilenr, a.bezeich, a.menge, a.familie, a.segment, a.rabattcode,
-            a.uvpTotal.toFixed(2).replace(".",","),
-            a.r2025 != null ? String(a.r2025).replace(".",",") : "",
-            a.r2026 != null ? String(a.r2026).replace(".",",") : "",
-            a.ek2025 != null ? a.ek2025.toFixed(2).replace(".",",") : "",
-            a.ek2026 != null ? a.ek2026.toFixed(2).replace(".",",") : "",
-            a.diffGes != null ? a.diffGes.toFixed(2).replace(".",",") : "",
-            a.status].join(";")
-        );
-        const blob = new Blob(["\uFEFF" + [h,...rows].join("\n")], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = "Renault_EK_Vergleich_2025_2026.csv"; a.click();
-        URL.revokeObjectURL(url);
+      /* Excel Export mit Farben */
+      const exportExcel = () => {
+        const X = getXLSX();
+        const headers = ["Teilenr", "Bezeichnung", "Menge", "Familie", "Segment", "Rabattcode", "UVP Gesamt", "Rabatt 2025%", "Rabatt 2026%", "EK 2025", "EK 2026", "Differenz", "Status"];
+        const data = [headers];
+        
+        sorted.forEach(a => {
+          data.push([
+            a.teilenr,
+            a.bezeich,
+            a.menge,
+            a.familie,
+            a.segment,
+            a.rabattcode,
+            a.uvpTotal,
+            a.r2025,
+            a.r2026,
+            a.ek2025,
+            a.ek2026,
+            a.diffGes,
+            a.status
+          ]);
+        });
+        
+        const ws = X.utils.aoa_to_sheet(data);
+        
+        // Spaltenbreiten
+        ws['!cols'] = [
+          { wch: 14 }, // Teilenr
+          { wch: 30 }, // Bezeichnung
+          { wch: 8 },  // Menge
+          { wch: 8 },  // Familie
+          { wch: 8 },  // Segment
+          { wch: 10 }, // Rabattcode
+          { wch: 12 }, // UVP
+          { wch: 12 }, // Rab 2025
+          { wch: 12 }, // Rab 2026
+          { wch: 12 }, // EK 2025
+          { wch: 12 }, // EK 2026
+          { wch: 12 }, // Differenz
+          { wch: 10 }, // Status
+        ];
+        
+        // Farben für Zellen
+        for (let i = 1; i <= sorted.length; i++) {
+          const row = sorted[i - 1];
+          const rowNum = i + 1;
+          
+          // Status-Spalte (M)
+          const statusCell = ws[`M${rowNum}`];
+          if (statusCell) {
+            if (row.status === "billiger") {
+              statusCell.s = { fill: { fgColor: { rgb: "C6EFCE" } }, font: { color: { rgb: "006100" } } };
+            } else if (row.status === "teurer") {
+              statusCell.s = { fill: { fgColor: { rgb: "FFC7CE" } }, font: { color: { rgb: "9C0006" } } };
+            } else if (row.status === "gleich") {
+              statusCell.s = { fill: { fgColor: { rgb: "FFEB9C" } }, font: { color: { rgb: "9C5700" } } };
+            }
+          }
+          
+          // Differenz-Spalte (L)
+          const diffCell = ws[`L${rowNum}`];
+          if (diffCell && row.diffGes != null) {
+            if (row.diffGes < 0) {
+              diffCell.s = { fill: { fgColor: { rgb: "C6EFCE" } }, font: { color: { rgb: "006100" }, bold: true } };
+            } else if (row.diffGes > 0) {
+              diffCell.s = { fill: { fgColor: { rgb: "FFC7CE" } }, font: { color: { rgb: "9C0006" }, bold: true } };
+            }
+          }
+          
+          // EK 2026 (K)
+          const ek26Cell = ws[`K${rowNum}`];
+          if (ek26Cell && row.status === "billiger") {
+            ek26Cell.s = { font: { color: { rgb: "006100" }, bold: true } };
+          } else if (ek26Cell && row.status === "teurer") {
+            ek26Cell.s = { font: { color: { rgb: "9C0006" }, bold: true } };
+          }
+        }
+        
+        // Header styling
+        headers.forEach((h, idx) => {
+          const cell = ws[X.utils.encode_cell({ r: 0, c: idx })];
+          if (cell) {
+            cell.s = { fill: { fgColor: { rgb: "4472C4" } }, font: { color: { rgb: "FFFFFF" }, bold: true } };
+          }
+        });
+        
+        // Zahlenformat für Währung
+        for (let i = 1; i <= sorted.length; i++) {
+          const rowNum = i + 1;
+          ['G', 'J', 'K', 'L'].forEach(col => {
+            const cell = ws[`${col}${rowNum}`];
+            if (cell && typeof cell.v === 'number') {
+              cell.z = '#,##0.00 €';
+            }
+          });
+          ['H', 'I'].forEach(col => {
+            const cell = ws[`${col}${rowNum}`];
+            if (cell && typeof cell.v === 'number') {
+              cell.z = '0.00%';
+              cell.v = cell.v / 100;
+            }
+          });
+        }
+        
+        const wb = X.utils.book_new();
+        X.utils.book_append_sheet(wb, ws, "EK-Vergleich");
+        
+        // Summierung am Ende
+        const sumRow = sorted.length + 3;
+        ws[`I${sumRow}`] = { v: "SUMME:", t: "s", s: { font: { bold: true } } };
+        ws[`J${sumRow}`] = { v: totals.ek2025, t: "n", z: '#,##0.00 €', s: { font: { bold: true } } };
+        ws[`K${sumRow}`] = { v: totals.ek2026, t: "n", z: '#,##0.00 €', s: { font: { bold: true } } };
+        ws[`L${sumRow}`] = { 
+          v: totals.diff, 
+          t: "n", 
+          z: '#,##0.00 €', 
+          s: { 
+            font: { bold: true, color: { rgb: totals.diff < 0 ? "006100" : "9C0006" } },
+            fill: { fgColor: { rgb: totals.diff < 0 ? "C6EFCE" : "FFC7CE" } }
+          } 
+        };
+        
+        X.writeFile(wb, "Renault_EK_Vergleich_2025_2026.xlsx", { bookSST: true, cellStyles: true });
       };
 
       /* ─── DROP ZONE ─── */
@@ -395,7 +503,7 @@
               </p>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              {hasAll && <button onClick={exportCSV} style={{ padding: "7px 14px", background: C.accent, color: C.bg, border: "none", borderRadius: 7, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>CSV Export</button>}
+              {hasAll && <button onClick={exportExcel} style={{ padding: "7px 14px", background: C.accent, color: C.bg, border: "none", borderRadius: 7, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Excel Export</button>}
               {(stammName || rabattName || rechNames.length > 0) && (
                 <button onClick={clearAll} style={{ padding: "7px 14px", background: C.card2, color: C.dim, border: `1px solid ${C.border}`, borderRadius: 7, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Alles zurücksetzen</button>
               )}
@@ -481,7 +589,7 @@
 
               {/* Search + Filter */}
               <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                <input type="text" placeholder="Suche Teilenr / Bezeichnung..."
+                <input type="text" placeholder="Suche Teilenr / Bezeichnung / Rabattcode..."
                   value={search} onChange={(e) => setSearch(e.target.value)}
                   style={{ flex: 1, minWidth: 200, padding: "8px 12px", borderRadius: 7,
                     border: `1px solid ${C.border}`, background: C.card, color: C.text,
