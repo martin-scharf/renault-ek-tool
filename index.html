@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Renault EK-Konditionsvergleich</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans','SF Pro Display',system-ui,sans-serif; background: #0c0e14; color: #dde0e8; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #151820; }
+    ::-webkit-scrollbar-thumb { background: #252a3a; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #353d52; }
+    input:focus, button:focus { outline: none; }
+    table { border-spacing: 0; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useCallback, useRef, useEffect } = React;
+
+    /* ══════════════════════════════════════════════
+       PARSERS
+       ══════════════════════════════════════════════ */
+    const FIELD = { teilenummer: 6, bezeichnung1: 9, bezeichnung2: 10, upeBruttoCent: 11, familie: 21, segment: 22 };
+
+    function parseStammdaten(text) {
+      const lines = text.split("\n").filter((l) => l.trim());
+      const map = {};
+      for (const line of lines) {
+        const f = line.replace(/;+$/, "").split(";");
+        if (f.length < 23) continue;
+        const tn = (f[FIELD.teilenummer] || "").trim();
+        if (!tn || tn.length < 3) continue;
+        const familie = (f[FIELD.familie] || "").trim();
+        const segment = (f[FIELD.segment] || "").trim();
+        map[tn] = { familie, segment, rabattcode: familie + segment };
+      }
+      return map;
+    }
+
+    async function loadXLSX() {
+      if (window._XLSX) return window._XLSX;
+      window._XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.2/package/xlsx.mjs");
+      return window._XLSX;
+    }
+
+    async function parseRabattExcel(buf) {
+      const X = await loadXLSX();
+      const wb = X.read(buf, { type: "array" });
+      const rows = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
+      const r = {};
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row?.[0]) continue;
+        const code = String(row[0]).trim();
+        const p = (v) => (v != null && v !== "-" && v !== "" ? parseFloat(v) : null);
+        r[code] = { code, r2025: p(row[1]), r2026: p(row[2]), diff: p(row[3]), status: row[4] ? String(row[4]).trim() : "" };
+      }
+      return r;
+    }
+
+    async function parseRechnung(buf, fileName) {
+      const X = await loadXLSX();
+      const wb = X.read(buf, { type: "array" });
+      const rows = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+      const items = [];
+      for (const row of rows) {
+        const tn = row["teilenr"] != null ? String(row["teilenr"]).trim() : "";
+        if (!tn) continue;
+        items.push({
+          teilenr: tn,
+          bezeich: row["bezeich"] ? String(row["bezeich"]).trim() : "",
+          menge: Number(row["mengegel"]) || 0,
+          uvp: Number(row["vkpuvpges"]) || 0,
+          altRabatt: row["posrabatt"] != null ? Number(row["posrabatt"]) : null,
+          vkp: Number(row["vkpges"]) || 0,
+          quelle: fileName,
+        });
+      }
+      return items;
+    }
+
+    /* ══════════════════════════════════════════════
+       STORAGE (LocalStorage)
+       ══════════════════════════════════════════════ */
+    const SK = { stamm: "ren-ek-stamm", stammN: "ren-ek-stamm-name", rabatt: "ren-ek-rabatt", rabattN: "ren-ek-rabatt-name", rech: "ren-ek-rech", rechN: "ren-ek-rech-names" };
+    function sSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) { console.error("Storage error:", e); } }
+    function sGet(k) { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null; } catch { return null; } }
+    function sDel(k) { try { localStorage.removeItem(k); } catch {} }
+
+    /* ══════════════════════════════════════════════
+       STYLING
+       ══════════════════════════════════════════════ */
+    const C = {
+      bg: "#0c0e14", card: "#151820", card2: "#1a1e2a", border: "#252a3a",
+      accent: "#f0a030", blue: "#4a9eff", green: "#22c55e", red: "#ef4444",
+      yellow: "#eab308", text: "#dde0e8", dim: "#7a8194", muted: "#454d63", white: "#fff",
+    };
+    const mono = "'JetBrains Mono','SF Mono','Fira Code',monospace";
+    const sans = "'DM Sans','SF Pro Display',system-ui,sans-serif";
+
+    /* ══════════════════════════════════════════════
+       LOGIN
+       ══════════════════════════════════════════════ */
+    function LoginScreen({ onLogin }) {
+      const [user, setUser] = useState("");
+      const [pass, setPass] = useState("");
+      const [error, setError] = useState("");
+
+      const handleLogin = () => {
+        if (user === "oe" && pass === "deals!!@1234#") {
+          sessionStorage.setItem("ek-auth", "1");
+          onLogin();
+        } else {
+          setError("Zugangsdaten falsch");
+        }
+      };
+
+      const handleKey = (e) => { if (e.key === "Enter") handleLogin(); };
+
+      return (
+        <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: C.card, padding: 32, borderRadius: 12, border: `1px solid ${C.border}`, width: 340 }}>
+            <h2 style={{ color: C.white, marginBottom: 20, textAlign: "center", fontWeight: 700 }}>
+              <span style={{ color: C.accent }}>◆</span> EK-Tool Login
+            </h2>
+            <input
+              type="text"
+              placeholder="Benutzer"
+              value={user}
+              onChange={(e) => setUser(e.target.value)}
+              onKeyDown={handleKey}
+              style={{ width: "100%", padding: "10px 14px", marginBottom: 12, borderRadius: 7, border: `1px solid ${C.border}`, background: C.card2, color: C.text, fontSize: 14 }}
+            />
+            <input
+              type="password"
+              placeholder="Passwort"
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+              onKeyDown={handleKey}
+              style={{ width: "100%", padding: "10px 14px", marginBottom: 16, borderRadius: 7, border: `1px solid ${C.border}`, background: C.card2, color: C.text, fontSize: 14 }}
+            />
+            {error && <div style={{ color: C.red, fontSize: 12, marginBottom: 12, textAlign: "center" }}>{error}</div>}
+            <button
+              onClick={handleLogin}
+              style={{ width: "100%", padding: "11px", background: C.accent, color: C.bg, border: "none", borderRadius: 7, fontWeight: 700, fontSize: 14, cursor: "pointer" }}
+            >
+              Anmelden
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* ══════════════════════════════════════════════
+       MAIN COMPONENT
+       ══════════════════════════════════════════════ */
+    function MainApp() {
+      const [stamm, setStamm] = useState({});
+      const [stammName, setStammName] = useState("");
+      const [rabatte, setRabatte] = useState({});
+      const [rabattName, setRabattName] = useState("");
+      const [rechnungen, setRechnungen] = useState([]);
+      const [rechNames, setRechNames] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [search, setSearch] = useState("");
+      const [filterStatus, setFilterStatus] = useState("");
+      const [sortCol, setSortCol] = useState("diffGes");
+      const [sortDir, setSortDir] = useState("asc");
+      const [dragTarget, setDragTarget] = useState(null);
+      const stammRef = useRef(null);
+      const rabattRef = useRef(null);
+      const rechRef = useRef(null);
+
+      useEffect(() => {
+        const s = sGet(SK.stamm);
+        const sn = sGet(SK.stammN);
+        const r = sGet(SK.rabatt);
+        const rn = sGet(SK.rabattN);
+        const re = sGet(SK.rech);
+        const ren = sGet(SK.rechN);
+        if (s) { setStamm(s); setStammName(sn || ""); }
+        if (r) { setRabatte(r); setRabattName(rn || ""); }
+        if (re) { setRechnungen(re); setRechNames(ren || []); }
+        setLoading(false);
+      }, []);
+
+      const handleStamm = useCallback((file) => {
+        if (!file) return;
+        setLoading(true);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const m = parseStammdaten(e.target.result);
+          setStamm(m); setStammName(file.name);
+          sSet(SK.stamm, m); sSet(SK.stammN, file.name);
+          setLoading(false);
+        };
+        reader.readAsText(file, "windows-1252");
+      }, []);
+
+      const handleRabatt = useCallback((file) => {
+        if (!file) return;
+        setLoading(true);
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const r = await parseRabattExcel(e.target.result);
+          setRabatte(r); setRabattName(file.name);
+          sSet(SK.rabatt, r); sSet(SK.rabattN, file.name);
+          setLoading(false);
+        };
+        reader.readAsArrayBuffer(file);
+      }, []);
+
+      const handleRechnungen = useCallback((files) => {
+        if (!files?.length) return;
+        setLoading(true);
+        const fileArr = Array.from(files);
+        let done = 0;
+        const allItems = [...rechnungen];
+        const allNames = [...rechNames];
+        fileArr.forEach((file) => {
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            const items = await parseRechnung(e.target.result, file.name);
+            allItems.push(...items);
+            if (!allNames.includes(file.name)) allNames.push(file.name);
+            done++;
+            if (done === fileArr.length) {
+              setRechnungen(allItems); setRechNames(allNames);
+              sSet(SK.rech, allItems); sSet(SK.rechN, allNames);
+              setLoading(false);
+            }
+          };
+          reader.readAsArrayBuffer(file);
+        });
+      }, [rechnungen, rechNames]);
+
+      const clearRechnungen = () => {
+        setRechnungen([]); setRechNames([]);
+        sDel(SK.rech); sDel(SK.rechN);
+      };
+
+      const clearAll = () => {
+        setStamm({}); setStammName(""); setRabatte({}); setRabattName("");
+        setRechnungen([]); setRechNames([]); setSearch(""); setFilterStatus("");
+        for (const k of Object.values(SK)) sDel(k);
+      };
+
+      const logout = () => {
+        sessionStorage.removeItem("ek-auth");
+        window.location.reload();
+      };
+
+      /* ─── COMPUTE ANALYSIS ─── */
+      const hasAll = Object.keys(stamm).length > 0 && Object.keys(rabatte).length > 0 && rechnungen.length > 0;
+
+      // Aggregate rechnungen by teilenr
+      const aggMap = {};
+      rechnungen.forEach((r) => {
+        if (!aggMap[r.teilenr]) {
+          aggMap[r.teilenr] = { teilenr: r.teilenr, bezeich: r.bezeich, menge: 0, uvpTotal: 0, vkpTotal: 0, lines: 0 };
+        }
+        aggMap[r.teilenr].menge += r.menge;
+        aggMap[r.teilenr].uvpTotal += r.uvp;
+        aggMap[r.teilenr].vkpTotal += r.vkp;
+        aggMap[r.teilenr].lines++;
+      });
+
+      const analyseRows = Object.values(aggMap).map((a) => {
+        const info = stamm[a.teilenr];
+        const rabattcode = info?.rabattcode || "";
+        const rInfo = rabatte[rabattcode] || null;
+        const ek2025 = rInfo?.r2025 != null ? a.uvpTotal * (1 - rInfo.r2025 / 100) : null;
+        const ek2026 = rInfo?.r2026 != null ? a.uvpTotal * (1 - rInfo.r2026 / 100) : null;
+        const diffGes = ek2025 != null && ek2026 != null ? ek2026 - ek2025 : null;
+        const status = diffGes != null ? (diffGes < -0.01 ? "billiger" : diffGes > 0.01 ? "teurer" : "gleich") : "unbekannt";
+        return {
+          ...a, familie: info?.familie || "", segment: info?.segment || "",
+          rabattcode, rInfo, ek2025, ek2026, diffGes, status,
+          r2025: rInfo?.r2025, r2026: rInfo?.r2026,
+        };
+      });
+
+      // Filter + sort
+      const filtered = analyseRows.filter((a) => {
+        const ms = !search || a.teilenr.toLowerCase().includes(search.toLowerCase()) || a.bezeich.toLowerCase().includes(search.toLowerCase());
+        const mf = !filterStatus || a.status === filterStatus;
+        return ms && mf;
+      });
+
+      const sorted = [...filtered].sort((a, b) => {
+        let va = a[sortCol] ?? (sortCol === "diffGes" ? 0 : "");
+        let vb = b[sortCol] ?? (sortCol === "diffGes" ? 0 : "");
+        if (["uvpTotal", "vkpTotal", "ek2025", "ek2026", "diffGes", "menge"].includes(sortCol)) { va = Number(va) || 0; vb = Number(vb) || 0; }
+        else { va = String(va).toLowerCase(); vb = String(vb).toLowerCase(); }
+        return sortDir === "asc" ? (va < vb ? -1 : va > vb ? 1 : 0) : (va > vb ? -1 : va < vb ? 1 : 0);
+      });
+
+      // Totals
+      const totals = analyseRows.reduce((t, a) => {
+        if (a.ek2025 != null) t.ek2025 += a.ek2025;
+        if (a.ek2026 != null) t.ek2026 += a.ek2026;
+        if (a.diffGes != null) t.diff += a.diffGes;
+        t.uvp += a.uvpTotal;
+        t.vkp += a.vkpTotal;
+        if (a.status === "billiger") t.billiger++;
+        if (a.status === "teurer") t.teurer++;
+        if (a.status === "gleich") t.gleich++;
+        if (a.status === "unbekannt") t.unbekannt++;
+        t.total++;
+        return t;
+      }, { ek2025: 0, ek2026: 0, diff: 0, uvp: 0, vkp: 0, billiger: 0, teurer: 0, gleich: 0, unbekannt: 0, total: 0 });
+
+      const eur = (v) => v != null ? v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
+      const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir("asc"); } };
+
+      /* CSV Export */
+      const exportCSV = () => {
+        const h = "Teilenr;Bezeichnung;Menge;Familie;Segment;Rabattcode;UVP_Gesamt;Rabatt2025%;Rabatt2026%;EK_2025;EK_2026;Differenz;Status";
+        const rows = sorted.map(a =>
+          [a.teilenr, a.bezeich, a.menge, a.familie, a.segment, a.rabattcode,
+            a.uvpTotal.toFixed(2).replace(".",","),
+            a.r2025 != null ? String(a.r2025).replace(".",",") : "",
+            a.r2026 != null ? String(a.r2026).replace(".",",") : "",
+            a.ek2025 != null ? a.ek2025.toFixed(2).replace(".",",") : "",
+            a.ek2026 != null ? a.ek2026.toFixed(2).replace(".",",") : "",
+            a.diffGes != null ? a.diffGes.toFixed(2).replace(".",",") : "",
+            a.status].join(";")
+        );
+        const blob = new Blob(["\uFEFF" + [h,...rows].join("\n")], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = "Renault_EK_Vergleich_2025_2026.csv"; a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      /* ─── DROP ZONE ─── */
+      const Drop = ({ label, sub, icon, fRef, onFiles, names, drag, type, multi }) => (
+        <div
+          onDrop={(e) => { e.preventDefault(); setDragTarget(null); multi ? onFiles(e.dataTransfer.files) : onFiles(e.dataTransfer.files[0]); }}
+          onDragOver={(e) => { e.preventDefault(); setDragTarget(type); }}
+          onDragLeave={() => setDragTarget(null)}
+          onClick={() => fRef.current?.click()}
+          style={{
+            flex: 1, minWidth: 200, padding: "20px 16px", borderRadius: 10,
+            border: `2px dashed ${drag ? C.accent : C.border}`,
+            background: drag ? "rgba(240,160,48,0.05)" : C.card,
+            cursor: "pointer", transition: "all 0.2s", textAlign: "center",
+          }}>
+          <div style={{ fontSize: 28, marginBottom: 6 }}>{icon}</div>
+          <div style={{ fontFamily: sans, fontWeight: 700, fontSize: 13, color: C.text }}>{label}</div>
+          <div style={{ fontFamily: sans, fontSize: 11, color: C.dim, marginTop: 2 }}>{sub}</div>
+          {typeof names === "string" && names && (
+            <div style={{ marginTop: 8, fontSize: 11, fontFamily: mono, color: C.blue }}>✓ {names}</div>
+          )}
+          {Array.isArray(names) && names.length > 0 && (
+            <div style={{ marginTop: 8, fontSize: 11, fontFamily: mono, color: C.green }}>
+              ✓ {names.length} Datei{names.length > 1 ? "en" : ""}
+            </div>
+          )}
+          <input ref={fRef} type="file" style={{ display: "none" }}
+            accept={type === "stamm" ? "*" : ".xlsx,.xls"}
+            multiple={!!multi}
+            onChange={(e) => onFiles(multi ? e.target.files : e.target.files[0])} />
+        </div>
+      );
+
+      const SortIcon = ({ col }) => (
+        <span style={{ opacity: sortCol === col ? 1 : 0.2, fontSize: 9, marginLeft: 2 }}>
+          {sortCol === col ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}
+        </span>
+      );
+
+      if (loading) return (
+        <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ fontFamily: sans, color: C.accent }}>Laden...</span>
+        </div>
+      );
+
+      return (
+        <div style={{ minHeight: "100vh", background: C.bg, fontFamily: sans, color: C.text, padding: 14 }}>
+
+          {/* HEADER */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.white }}>
+                <span style={{ color: C.accent }}>◆</span> Renault EK-Konditionsvergleich
+              </h1>
+              <p style={{ margin: "2px 0 0", fontSize: 11, color: C.dim }}>
+                Stammdaten + Rabattliste + Rechnungen → EK-Vergleich 2025 vs 2026
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {hasAll && <button onClick={exportCSV} style={{ padding: "7px 14px", background: C.accent, color: C.bg, border: "none", borderRadius: 7, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>CSV Export</button>}
+              {(stammName || rabattName || rechNames.length > 0) && (
+                <button onClick={clearAll} style={{ padding: "7px 14px", background: C.card2, color: C.dim, border: `1px solid ${C.border}`, borderRadius: 7, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Alles zurücksetzen</button>
+              )}
+              <button onClick={logout} style={{ padding: "7px 14px", background: "rgba(239,68,68,0.1)", color: C.red, border: `1px solid ${C.red}33`, borderRadius: 7, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Logout</button>
+            </div>
+          </div>
+
+          {/* UPLOAD ZONES */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+            <Drop label="① Stammdaten" sub="TLDRAGP-Datei" icon="📋"
+              fRef={stammRef} onFiles={handleStamm} names={stammName}
+              drag={dragTarget === "stamm"} type="stamm" />
+            <Drop label="② Rabattliste" sub="Excel (2025/2026)" icon="📊"
+              fRef={rabattRef} onFiles={handleRabatt} names={rabattName}
+              drag={dragTarget === "rabatt"} type="rabatt" />
+            <Drop label="③ Rechnungen" sub="Mehrere Excel möglich" icon="🧾"
+              fRef={rechRef} onFiles={handleRechnungen} names={rechNames}
+              drag={dragTarget === "rech"} type="rech" multi />
+          </div>
+
+          {/* Rechnungen list + clear */}
+          {rechNames.length > 0 && (
+            <div style={{ marginBottom: 12, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: C.dim }}>Geladene Rechnungen:</span>
+              {rechNames.map((n, i) => (
+                <span key={i} style={{ padding: "3px 8px", background: C.card2, borderRadius: 5, fontSize: 11, fontFamily: mono, color: C.blue }}>{n}</span>
+              ))}
+              <button onClick={clearRechnungen} style={{ padding: "3px 10px", background: "rgba(239,68,68,0.1)", color: C.red, border: "none", borderRadius: 5, fontSize: 11, cursor: "pointer", fontWeight: 600 }}>Rechnungen löschen</button>
+            </div>
+          )}
+
+          {/* ─── ANALYSE ─── */}
+          {hasAll && (
+            <>
+              {/* Summary Cards */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                {[
+                  { label: "Positionen", val: totals.total, color: C.blue },
+                  { label: "Billiger 2026", val: totals.billiger, color: C.green, filter: "billiger" },
+                  { label: "Teurer 2026", val: totals.teurer, color: C.red, filter: "teurer" },
+                  { label: "Gleich", val: totals.gleich, color: C.dim, filter: "gleich" },
+                  { label: "Ohne Zuordnung", val: totals.unbekannt, color: C.muted, filter: "unbekannt" },
+                ].map((s, i) => (
+                  <div key={i} onClick={() => s.filter ? setFilterStatus(filterStatus === s.filter ? "" : s.filter) : null}
+                    style={{
+                      padding: "10px 16px", borderRadius: 8, background: filterStatus === s.filter ? `${s.color}18` : C.card,
+                      border: `1px solid ${filterStatus === s.filter ? s.color + "44" : C.border}`,
+                      cursor: s.filter ? "pointer" : "default", transition: "all 0.15s", minWidth: 100,
+                    }}>
+                    <div style={{ fontFamily: mono, fontSize: 20, fontWeight: 800, color: s.color }}>{s.val}</div>
+                    <div style={{ fontSize: 11, color: C.dim, marginTop: 1 }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Big Result */}
+              <div style={{
+                display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap",
+              }}>
+                <div style={{ flex: 1, minWidth: 200, padding: "14px 18px", borderRadius: 10,
+                  background: `linear-gradient(135deg, ${C.card} 0%, ${C.card2} 100%)`,
+                  border: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 11, color: C.dim, marginBottom: 4 }}>Gesamt EK 2025</div>
+                  <div style={{ fontFamily: mono, fontSize: 22, fontWeight: 800, color: C.text }}>{eur(totals.ek2025)} €</div>
+                </div>
+                <div style={{ flex: 1, minWidth: 200, padding: "14px 18px", borderRadius: 10,
+                  background: `linear-gradient(135deg, ${C.card} 0%, ${C.card2} 100%)`,
+                  border: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 11, color: C.dim, marginBottom: 4 }}>Gesamt EK 2026</div>
+                  <div style={{ fontFamily: mono, fontSize: 22, fontWeight: 800, color: C.text }}>{eur(totals.ek2026)} €</div>
+                </div>
+                <div style={{ flex: 1, minWidth: 200, padding: "14px 18px", borderRadius: 10,
+                  background: totals.diff < 0 ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
+                  border: `1px solid ${totals.diff < 0 ? C.green + "33" : C.red + "33"}` }}>
+                  <div style={{ fontSize: 11, color: C.dim, marginBottom: 4 }}>
+                    {totals.diff < 0 ? "Einkaufsvorteil 2026" : "Mehrkosten 2026"}
+                  </div>
+                  <div style={{ fontFamily: mono, fontSize: 22, fontWeight: 800, color: totals.diff < 0 ? C.green : C.red }}>
+                    {totals.diff < 0 ? "" : "+"}{eur(totals.diff)} €
+                  </div>
+                </div>
+              </div>
+
+              {/* Search + Filter */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                <input type="text" placeholder="Suche Teilenr / Bezeichnung..."
+                  value={search} onChange={(e) => setSearch(e.target.value)}
+                  style={{ flex: 1, minWidth: 200, padding: "8px 12px", borderRadius: 7,
+                    border: `1px solid ${C.border}`, background: C.card, color: C.text,
+                    fontFamily: sans, fontSize: 13, outline: "none" }} />
+                {(search || filterStatus) && (
+                  <button onClick={() => { setSearch(""); setFilterStatus(""); }}
+                    style={{ padding: "8px 12px", background: "rgba(239,68,68,0.1)", color: C.red,
+                      border: "none", borderRadius: 7, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
+                    ✕ Reset
+                  </button>
+                )}
+              </div>
+
+              <div style={{ fontSize: 11, color: C.dim, marginBottom: 6, paddingLeft: 2 }}>
+                {filtered.length} von {analyseRows.length} Positionen
+              </div>
+
+              {/* TABLE */}
+              <div style={{ background: C.card, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: C.card2 }}>
+                        {[
+                          { k: "teilenr", l: "Teilenr.", w: 110 },
+                          { k: "bezeich", l: "Bezeichnung", w: 160 },
+                          { k: "menge", l: "Menge", w: 55, r: 1 },
+                          { k: "rabattcode", l: "Code", w: 60 },
+                          { k: "uvpTotal", l: "UVP ges.", w: 85, r: 1 },
+                          { k: "r2025", l: "Rab.25%", w: 65, r: 1 },
+                          { k: "ek2025", l: "EK 2025", w: 85, r: 1 },
+                          { k: "r2026", l: "Rab.26%", w: 65, r: 1 },
+                          { k: "ek2026", l: "EK 2026", w: 85, r: 1 },
+                          { k: "diffGes", l: "Differenz", w: 85, r: 1 },
+                          { k: "status", l: "Status", w: 80 },
+                        ].map((c) => (
+                          <th key={c.k} onClick={() => toggleSort(c.k)}
+                            style={{
+                              padding: "9px 8px", textAlign: c.r ? "right" : "left",
+                              fontWeight: 700, color: C.dim, fontSize: 10, textTransform: "uppercase",
+                              letterSpacing: "0.4px", cursor: "pointer", whiteSpace: "nowrap",
+                              borderBottom: `1px solid ${C.border}`, minWidth: c.w, userSelect: "none",
+                            }}>
+                            {c.l}<SortIcon col={c.k} />
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.slice(0, 500).map((a, i) => {
+                        const rowBg = a.status === "billiger" ? "rgba(34,197,94,0.04)"
+                          : a.status === "teurer" ? "rgba(239,68,68,0.04)"
+                          : i % 2 === 0 ? C.card : C.card2;
+                        return (
+                          <tr key={a.teilenr + i} style={{ background: rowBg, borderBottom: `1px solid ${C.border}11` }}>
+                            <td style={{ padding: "6px 8px", fontFamily: mono, fontWeight: 600, color: C.white, fontSize: 11 }}>{a.teilenr}</td>
+                            <td style={{ padding: "6px 8px", fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.bezeich}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, fontSize: 11 }}>{a.menge}</td>
+                            <td style={{ padding: "6px 8px" }}>
+                              <span style={{ padding: "1px 6px", borderRadius: 3, fontFamily: mono, fontSize: 10, fontWeight: 700,
+                                background: a.rabattcode ? `${C.accent}20` : `${C.muted}20`,
+                                color: a.rabattcode ? C.accent : C.muted }}>{a.rabattcode || "—"}</span>
+                            </td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, fontSize: 11 }}>{eur(a.uvpTotal)}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, fontSize: 11, color: C.dim }}>{a.r2025 != null ? `${a.r2025}%` : "—"}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, fontSize: 11 }}>{eur(a.ek2025)}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, fontSize: 11, color: C.dim }}>{a.r2026 != null ? `${a.r2026}%` : "—"}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, fontSize: 11, fontWeight: 700,
+                              color: a.status === "billiger" ? C.green : a.status === "teurer" ? C.red : C.text }}>{eur(a.ek2026)}</td>
+                            <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: mono, fontSize: 11, fontWeight: 700,
+                              color: a.diffGes != null ? (a.diffGes < 0 ? C.green : a.diffGes > 0 ? C.red : C.dim) : C.muted }}>
+                              {a.diffGes != null ? `${a.diffGes < 0 ? "" : "+"}${eur(a.diffGes)}` : "—"}
+                            </td>
+                            <td style={{ padding: "6px 8px" }}>
+                              <span style={{
+                                padding: "2px 7px", borderRadius: 4, fontSize: 10, fontFamily: mono, fontWeight: 600,
+                                background: a.status === "billiger" ? `${C.green}18` : a.status === "teurer" ? `${C.red}18` : `${C.muted}15`,
+                                color: a.status === "billiger" ? C.green : a.status === "teurer" ? C.red : C.dim,
+                              }}>
+                                {a.status === "billiger" ? "billiger" : a.status === "teurer" ? "teurer" : a.status === "gleich" ? "gleich" : "k.A."}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {sorted.length > 500 && (
+                  <div style={{ padding: "10px", textAlign: "center", color: C.dim, fontSize: 11, borderTop: `1px solid ${C.border}` }}>
+                    Zeige 500 von {sorted.length} — CSV-Export enthält alle
+                  </div>
+                )}
+                {sorted.length === 0 && (
+                  <div style={{ padding: "28px", textAlign: "center", color: C.muted }}>Keine Artikel gefunden</div>
+                )}
+              </div>
+            </>
+          )}
+
+          {!hasAll && (stammName || rabattName || rechNames.length > 0) && (
+            <div style={{ textAlign: "center", padding: "30px", color: C.dim, fontSize: 13 }}>
+              {!stammName && "Stammdaten fehlen noch. "}
+              {!rabattName && "Rabattliste fehlen noch. "}
+              {rechNames.length === 0 && "Rechnungen fehlen noch."}
+            </div>
+          )}
+
+          {!stammName && !rabattName && rechNames.length === 0 && (
+            <div style={{ textAlign: "center", padding: "30px", color: C.dim, fontSize: 13, lineHeight: 1.8 }}>
+              Lade alle drei Dateitypen per Drag & Drop:<br />
+              <strong>①</strong> Stammdaten → Rabattcode pro Artikel<br />
+              <strong>②</strong> Rabattliste → Konditionen 2025/2026<br />
+              <strong>③</strong> Rechnungen → gekaufte Positionen<br />
+              <span style={{ fontSize: 11, color: C.muted }}>Alle Daten werden im Browser gespeichert.</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ══════════════════════════════════════════════
+       APP WRAPPER
+       ══════════════════════════════════════════════ */
+    function App() {
+      const [auth, setAuth] = useState(sessionStorage.getItem("ek-auth") === "1");
+      
+      if (!auth) return <LoginScreen onLogin={() => setAuth(true)} />;
+      return <MainApp />;
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
