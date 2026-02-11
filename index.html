@@ -7,6 +7,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'DM Sans','SF Pro Display',system-ui,sans-serif; background: #0c0e14; color: #dde0e8; }
@@ -44,14 +45,12 @@
       return map;
     }
 
-    async function loadXLSX() {
-      if (window._XLSX) return window._XLSX;
-      window._XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.2/package/xlsx.mjs");
-      return window._XLSX;
+    function getXLSX() {
+      return window.XLSX;
     }
 
-    async function parseRabattExcel(buf) {
-      const X = await loadXLSX();
+    function parseRabattExcel(buf) {
+      const X = getXLSX();
       const wb = X.read(buf, { type: "array" });
       const rows = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
       const r = {};
@@ -65,8 +64,8 @@
       return r;
     }
 
-    async function parseRechnung(buf, fileName) {
-      const X = await loadXLSX();
+    function parseRechnung(buf, fileName) {
+      const X = getXLSX();
       const wb = X.read(buf, { type: "array" });
       const rows = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
       const items = [];
@@ -209,7 +208,7 @@
         setLoading(true);
         const reader = new FileReader();
         reader.onload = async (e) => {
-          const r = await parseRabattExcel(e.target.result);
+          const r = parseRabattExcel(e.target.result);
           setRabatte(r); setRabattName(file.name);
           sSet(SK.rabatt, r); sSet(SK.rabattN, file.name);
           setLoading(false);
@@ -227,7 +226,7 @@
         fileArr.forEach((file) => {
           const reader = new FileReader();
           reader.onload = async (e) => {
-            const items = await parseRechnung(e.target.result, file.name);
+            const items = parseRechnung(e.target.result, file.name);
             allItems.push(...items);
             if (!allNames.includes(file.name)) allNames.push(file.name);
             done++;
